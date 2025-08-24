@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Voice to MIDI Demo</title>
+  <script src="https://cdn.jsdelivr.net/npm/jsmidgen@1.0.1"></script>
+</head>
+<body>
+  <h2>?? 歌ったメロディをMIDIに変換</h2>
+  <button id="startBtn">録音開始</button>
+  <button id="stopBtn">録音停止 → MIDI保存</button>
+  <p>録音開始 → 歌う → 停止すると <b>voice.mid</b> がダウンロードされます。</p>
+
+  <script>
+    let audioCtx, analyser, source;
+    let bufferLength, dataArray;
+    let recording = false;
+    let pitches = [];
+
+    // 録音開始
+    document.getElementById("startBtn").onclick = async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      bufferLength = analyser.fftSize;
+      dataArray = new Float32Array(bufferLength);
+      source.connect(analyser);
+      pitches = [];
+      recording = true;
+      capturePitch();
+      console.log("録音スタート！");
+    };
+
+    // 録音停止
+    document.getElementById("stopBtn").onclick = () => {
+      recording = false;
+      console.log("録音停止, MIDI生成");
+      createMIDI();
+    };
+
+    // ピッチ検出ループ
+    function capturePitch() {
+      if (!recording) return;
+      analyser.getFloatTimeDomainData(dataArray);
+      let pitch = autoCorrelate(dataArray, audioCtx.sampleRate);
+      if (pitch !== -1) {
+        pitches.push(pitch);
+      }
+      requestAnimationFrame(capturePitch);
+    }
+
+    // 簡易オートコリレーション法で基本周波数を推定
+    function autoCorrelate(buf, sampleRate) {
+      let SIZE = buf.length;
+      let MAX_SAMPLES = Math.floor(SIZE/2);
+      let best_offset = -1;
+      let best_correlation = 0;
+      let rms = 0;
+
+      for (let i=0;i<SIZE;i++) {
+        let val = buf[i];
+        rms += val*val;
+      }
+      rms = Math.sqrt(rms/SIZE);
+      if (rms<0.01) return -1; // 無音判定
+
+      let lastCorrelation=1;
+      for (let offset = 4; offset<MAX_SAMPLES; offset++) {
+        let correlation=0;
+        for (let i=0;i<MAX_SAMPLES;i++) {
+          correlation += Math.abs((buf[i])-(buf[i+offset]));
+        }
+        correlation = 1 - (correlation/MAX_SAMPLES);
+        if (correlation>0.9 && correlation>lastCorrelation) {
+          best_correlation=correlation;
+          best_offset=offset;
+        }
+        lastCorrelation=correlation;
+      }
+      if (best_offset==-1) return -1;
+      return sampleRate/best_offset;
+    }
+
+    // MIDIファイル生成
+    function createMIDI() {
+      let file = new JSMIDGEN.File();
+      let track = new JSMIDGEN.Track();
+      file.addTrack(track);
+
+      // ピッチをMIDIノートに変換
+      pitches.forEach((freq, i) => {
+        let note = Math.round(69 + 12*Math.log2(freq/440)); // A4=440Hz基準
+        if (note > 0 && note < 127) {
+          track.addNote(0, note, 32); // 32 = ノート長さ（適当）
+        }
+      });
+
+      // ダウンロード処理
+      let midiData = file.toBytes();
+      let blob = new Blob([new Uint8Array(midiData.split("").map(c=>c.charCodeAt(0)))], {type: "audio/midi"});
+      let url = URL.createObjectURL(blob);
+      let a = document.createElement("a");
+      a.href = url;
+      a.download = "voice.mid";
+      a.click();
+    }
+  </script>
+</body>
+</html>
