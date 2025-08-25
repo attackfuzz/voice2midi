@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MIDI再生（ローカル音源版）</title>
+  <!-- ライブラリ -->
+  <script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.28/build/Midi.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.15.7/dist/soundfont-player.js"></script>
+  <style>
+    body{font-family:sans-serif;margin:20px}
+    .btn{padding:8px 12px;margin:4px}
+    input[type=range]{width:100%}
+  </style>
+</head>
+<body>
+<h2>?? MIDI再生（ローカルサウンドフォント使用）</h2>
+
+<input type="file" id="file" accept=".mid,.midi"><br><br>
+<button id="unlock" class="btn">?? 音を有効化（初回）</button>
+<button id="play" class="btn" disabled>? 再生</button>
+<button id="pause" class="btn" disabled>? 一時停止</button>
+<button id="stop" class="btn" disabled>■ 停止</button>
+<br><br>
+<label>進行: <span id="pos">0:00</span> / <span id="dur">--:--</span></label><br>
+<input id="seek" type="range" min="0" max="1000" value="0" disabled><br><br>
+<label>テンポ: <input id="tempo" type="range" min="50" max="200" value="100"> <span id="tempoVal">100%</span></label><br>
+<label>音量: <input id="vol" type="range" min="-40" max="0" value="-6"> <span id="volVal">-6dB</span></label><br>
+<label><input type="checkbox" id="loop"> ループ再生</label>
+<p id="status">状態: 初期化待ち</p>
+
+<script>
+const AudioContext = window.AudioContext || window.webkitAudioContext;
+const ac = new AudioContext();
+let masterGain = ac.createGain();
+masterGain.gain.value = dbToGain(-6);
+masterGain.connect(ac.destination);
+
+let piano = null;      // サウンドフォント
+let midi = null;
+let events = [];
+let totalDuration = 0;
+let startAtCtx = 0;
+let pausedAt = 0;
+let playing = false;
+
+const $ = id=>document.getElementById(id);
+const file=$("file"), unlock=$("unlock"),
+      play=$("play"), pause=$("pause"), stop=$("stop"),
+      seek=$("seek"), pos=$("pos"), dur=$("dur"),
+      tempo=$("tempo"), tempoVal=$("tempoVal"),
+      vol=$("vol"), volVal=$("volVal"),
+      loop=$("loop"), status=$("status");
+
+// 初期: unlock で音源ロード
+unlock.onclick=async()=>{
+  await ac.resume();
+  if(!piano){
+    status.textContent="音源を読み込み中…";
+    piano = await Soundfont.instrument(ac,"acoustic_grand_piano",{
+      destination: masterGain,
+      soundfont:"FluidR3_GM",   // ← ローカルフォルダ名
+      format:"mp3",
+      soundfontUrl:"./soundfonts" // ← index.html からの相対パス
+    });
+  }
+  status.textContent="準備完了";
+};
+
+file.onchange=async()=>{
+  if(!file.files[0])return;
+  const buf = await file.files[0].arrayBuffer();
+  midi = new Midi(buf);
+  events=[];
+  midi.tracks.forEach(tr=>{
+    tr.notes.forEach(n=>{
+      events.push({time:n.time,duration:n.duration,midi:n.midi,vel:n.velocity||0.8});
+    });
+  });
+  events.sort((a,b)=>a.time-b.time);
+  totalDuration=midi.duration;
+  dur.textContent=fmt(totalDuration);
+  seek.disabled=false;
+  play.disabled=false;
+  status.textContent="MIDI読込完了";
+};
+
+play.onclick=async()=>{
+  if(!piano||!midi)return;
+  await ac.resume();
+  const rate=tempo.value/100;
+  startAtCtx=ac.currentTime-(pausedAt/rate);
+  scheduleFrom(pausedAt,rate);
+  playing=true;
+  play.disabled=true; pause.disabled=false; stop.disabled=false;
+  tick();
+  status.textContent="再生中";
+};
+
+pause.onclick=()=>{
+  if(!playing)return;
+  pausedAt=getPos();
+  cancelScheduled();
+  playing=false;
+  play.disabled=false; pause.disabled=true;
+  status.textContent="一時停止";
+};
+
+stop.onclick=()=>{
+  cancelScheduled();
+  playing=false;
+  pausedAt=0;
+  play.disabled=false; pause.disabled=true; stop.disabled=true;
+  seek.value=0; pos.textContent="0:00";
+  status.textContent="停止";
+};
+
+tempo.oninput=()=>tempoVal.textContent=tempo.value+"%";
+vol.oninput=()=>{
+  volVal.textContent=vol.value+"dB";
+  masterGain.gain.setValueAtTime(dbToGain(vol.value),ac.currentTime);
+};
+
+function tick(){
+  if(!playing)return;
+  const t=getPos();
+  pos.textContent=fmt(t);
+  seek.value=totalDuration?Math.floor(t/totalDuration*1000):0;
+  if(t>=totalDuration){
+    if(loop.checked){ stop.onclick(); play.onclick(); }
+    else stop.onclick();
+  }else requestAnimationFrame(tick);
+}
+
+function getPos(){
+  const rate=tempo.value/100;
+  return (ac.currentTime-startAtCtx)*rate;
+}
+
+function scheduleFrom(offset,rate){
+  events.forEach(ev=>{
+    const local=ev.time-offset;
+    if(local<0)return;
+    const when=ac.currentTime+local/rate;
+    const dur=ev.duration/rate;
+    piano.play(ev.midi,when,{gain:ev.vel,duration:dur});
+  });
+}
+
+function cancelScheduled(){
+  masterGain.gain.cancelScheduledValues(ac.currentTime);
+  masterGain.gain.setValueAtTime(0,ac.currentTime);
+  setTimeout(()=>masterGain.gain.setValueAtTime(dbToGain(vol.value),ac.currentTime),50);
+}
+
+function dbToGain(db){return Math.pow(10,db/20);}
+function fmt(s){let m=Math.floor(s/60),ss=Math.floor(s%60);return `${m}:${String(ss).padStart(2,"0")}`;}
+</script>
+</body>
+</html>
