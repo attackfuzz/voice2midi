@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>クオンタイズ音階をMIDI保存（ログ付き）</title>
+  <title>クオンタイズ音階をMIDI保存（修正版）</title>
   <script src="https://cdn.jsdelivr.net/npm/jsmidgen@1.1.1/build/midgen.min.js"></script>
 </head>
 <body>
@@ -16,7 +16,7 @@
   <script>
     let audioCtx, analyser, source, mediaStream;
     let recording = false;
-    let notes = []; // クオンタイズされたノート
+    let notes = [];
     let rafId, startTime;
 
     const logArea = document.getElementById("log");
@@ -24,13 +24,11 @@
       const t = new Date().toLocaleTimeString();
       logArea.textContent += `[${t}] ${msg}\n`;
       logArea.scrollTop = logArea.scrollHeight;
-      console.log(msg);
     }
 
     function freqToMidi(freq) {
       return Math.round(69 + 12 * Math.log2(freq / 440));
     }
-
     function midiToNoteName(midi) {
       const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
       return names[midi % 12] + Math.floor(midi/12 - 1);
@@ -116,8 +114,8 @@
         return;
       }
       try {
-        const file = new JSMidi.File();
-        const track = new JSMidi.Track();
+        const file = new MIDI.File();   // ← 修正ポイント
+        const track = new MIDI.Track();
         file.addTrack(track);
 
         const bpm = parseInt(document.getElementById("bpmInput").value, 10);
