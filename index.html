@@ -2,11 +2,11 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>クオンタイズ音階をMIDI保存</title>
+  <title>クオンタイズ音階をMIDI保存（ログ付き）</title>
   <script src="https://cdn.jsdelivr.net/npm/jsmidgen@1.1.1/build/midgen.min.js"></script>
 </head>
 <body>
-  <h2>クオンタイズ音階 → MIDIファイル保存</h2>
+  <h2>クオンタイズ音階 → MIDIファイル保存（ログ付き）</h2>
   <label>BPM: <input id="bpmInput" type="number" value="120"></label>
   <button id="startBtn">録音開始</button>
   <button id="stopBtn">録音停止</button>
@@ -24,6 +24,7 @@
       const t = new Date().toLocaleTimeString();
       logArea.textContent += `[${t}] ${msg}\n`;
       logArea.scrollTop = logArea.scrollHeight;
+      console.log(msg);
     }
 
     function freqToMidi(freq) {
@@ -38,19 +39,14 @@
     function autoCorrelate(buf, sampleRate) {
       let SIZE = buf.length;
       let rms = 0;
-      for (let i=0;i<SIZE;i++) {
-        let val = buf[i];
-        rms += val*val;
-      }
+      for (let i=0;i<SIZE;i++) rms += buf[i]*buf[i];
       rms = Math.sqrt(rms/SIZE);
       if (rms<0.01) return null;
 
       let bestOffset=-1, bestCorrelation=0;
       for (let offset=80; offset<1000; offset++) {
         let correlation=0;
-        for (let i=0;i<SIZE-offset;i++) {
-          correlation += buf[i]*buf[i+offset];
-        }
+        for (let i=0;i<SIZE-offset;i++) correlation += buf[i]*buf[i+offset];
         correlation /= SIZE-offset;
         if (correlation>bestCorrelation) {
           bestCorrelation = correlation;
@@ -63,82 +59,89 @@
 
     async function startRecording() {
       if (recording) return;
-      const bpm = parseInt(document.getElementById("bpmInput").value, 10);
-      const beatLength = 60 / bpm;
-      const eighthLength = beatLength / 2;
+      try {
+        const bpm = parseInt(document.getElementById("bpmInput").value, 10);
+        const beatLength = 60 / bpm;
+        const eighthLength = beatLength / 2;
 
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio:true });
-      source = audioCtx.createMediaStreamSource(mediaStream);
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 2048;
-      source.connect(analyser);
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+        source = audioCtx.createMediaStreamSource(mediaStream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
 
-      const buffer = new Float32Array(analyser.fftSize);
-      startTime = audioCtx.currentTime;
-      notes = [];
+        const buffer = new Float32Array(analyser.fftSize);
+        startTime = audioCtx.currentTime;
+        notes = [];
 
-      function update() {
-        if (!recording) return;
-        analyser.getFloatTimeDomainData(buffer);
-        let pitch = autoCorrelate(buffer, audioCtx.sampleRate);
-        if (pitch) {
-          let midi = freqToMidi(pitch);
-          let name = midiToNoteName(midi);
-
-          let elapsed = audioCtx.currentTime - startTime;
-          let step = Math.round(elapsed / eighthLength);
-          notes[step] = {midi, name};
-
-          log(`音検出: ${name} (step=${step})`);
+        function update() {
+          if (!recording) return;
+          analyser.getFloatTimeDomainData(buffer);
+          let pitch = autoCorrelate(buffer, audioCtx.sampleRate);
+          if (pitch) {
+            let midi = freqToMidi(pitch);
+            let name = midiToNoteName(midi);
+            let elapsed = audioCtx.currentTime - startTime;
+            let step = Math.round(elapsed / eighthLength);
+            notes[step] = {midi, name};
+            log(`音検出: ${name} (step=${step})`);
+          }
+          rafId = requestAnimationFrame(update);
         }
-        rafId = requestAnimationFrame(update);
+        recording = true;
+        update();
+        log(`?? 録音開始 (BPM=${bpm})`);
+      } catch (err) {
+        log("?? 録音開始失敗: " + err);
       }
-      recording = true;
-      update();
-      log(`録音開始 (BPM=${bpm})`);
     }
 
     function stopRecording() {
-      if (!recording) return;
+      if (!recording) {
+        log("?? 録音は実行中ではありません");
+        return;
+      }
       recording = false;
       mediaStream.getTracks().forEach(t=>t.stop());
       cancelAnimationFrame(rafId);
-      log("録音停止");
-      log("保存されたノート: " + JSON.stringify(notes.filter(Boolean).map(n=>n.name)));
+      log("? 録音停止");
+      log("保存されたノート数: " + notes.filter(Boolean).length);
     }
 
     function downloadMIDI() {
+      log("?? MIDI保存処理開始");
       if (!notes.length) {
-        log("?? 保存するノートがありません");
+        log("?? 保存できるノートがありません");
         return;
       }
-      log("MIDI変換開始");
+      try {
+        const file = new JSMidi.File();
+        const track = new JSMidi.Track();
+        file.addTrack(track);
 
-      const file = new JSMidi.File();
-      const track = new JSMidi.Track();
-      file.addTrack(track);
+        const bpm = parseInt(document.getElementById("bpmInput").value, 10);
+        const eighthTicks = 128;
+        track.setTempo(bpm);
 
-      const bpm = parseInt(document.getElementById("bpmInput").value, 10);
-      const beatLength = 60 / bpm;
-      const eighthTicks = 128; // 1/8 note = 128 ticks に固定
-      track.setTempo(bpm);
+        notes.forEach((n, i) => {
+          if (!n) return;
+          track.addNoteOn(0, n.midi, i * eighthTicks);
+          track.addNoteOff(0, n.midi, i * eighthTicks + eighthTicks);
+        });
 
-      notes.forEach((n, i) => {
-        if (!n) return;
-        track.addNoteOn(0, n.midi, i * eighthTicks);
-        track.addNoteOff(0, n.midi, i * eighthTicks + eighthTicks);
-      });
+        const midiBlob = new Blob([file.toBytes()], { type: "audio/midi" });
+        const url = URL.createObjectURL(midiBlob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "quantized.mid";
+        a.click();
+        URL.revokeObjectURL(url);
 
-      const midiBlob = new Blob([file.toBytes()], { type: "audio/midi" });
-      const url = URL.createObjectURL(midiBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "quantized.mid";
-      a.click();
-      URL.revokeObjectURL(url);
-
-      log("MIDI変換停止 → ファイル保存しました");
+        log("? MIDIファイル保存成功 → quantized.mid");
+      } catch (err) {
+        log("? MIDI保存失敗: " + err);
+      }
     }
 
     document.getElementById("startBtn").onclick = startRecording;
