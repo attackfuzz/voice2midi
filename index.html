@@ -1,109 +1,70 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-  <meta charset="utf-8">
-  <title>Voice to MIDI Demo</title>
+  <meta charset="UTF-8">
+  <title>MIDIダウンロードテスト</title>
 </head>
 <body>
-  <h2>Voice → MIDI 変換テスト</h2>
+  <h1>マイク録音 → MIDI保存（テスト版）</h1>
   <button id="startBtn">録音開始</button>
   <button id="stopBtn">録音停止</button>
   <button id="downloadBtn">MIDIダウンロード</button>
-  <p id="status">待機中</p>
-  <pre id="notes"></pre>
+  <p id="status"></p>
 
-  <script src="https://cdn.jsdelivr.net/npm/jsmidgen@1.1.1/build/midgen.min.js"></script>
   <script>
-    let audioContext, processor, micStream;
-    let isRecording = false;
-    let noteEvents = []; // {note, time}
+    let mediaRecorder;
+    let audioChunks = [];
 
-    // 簡易YINによるピッチ推定
-    function detectPitch(buffer, sampleRate) {
-      let bestOffset = -1;
-      let bestCorrelation = 0;
-      let rms = 0;
-      for (let i = 0; i < buffer.length; i++) {
-        let val = buffer[i];
-        rms += val * val;
-      }
-      rms = Math.sqrt(rms / buffer.length);
-      if (rms < 0.01) return null;
-
-      let size = buffer.length;
-      for (let offset = 80; offset < 1000; offset++) {
-        let correlation = 0;
-        for (let i = 0; i < size - offset; i++) {
-          correlation += buffer[i] * buffer[i + offset];
-        }
-        correlation = correlation / (size - offset);
-        if (correlation > bestCorrelation) {
-          bestCorrelation = correlation;
-          bestOffset = offset;
-        }
-      }
-      if (bestOffset === -1) return null;
-      return sampleRate / bestOffset;
-    }
-
-    function freqToMidi(freq) {
-      return Math.round(69 + 12 * Math.log2(freq / 440));
-    }
-
+    // 録音開始
     document.getElementById("startBtn").onclick = async () => {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const source = audioContext.createMediaStreamSource(micStream);
-      processor = audioContext.createScriptProcessor(2048, 1, 1);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
 
-      let startTime = audioContext.currentTime;
-      processor.onaudioprocess = (e) => {
-        let input = e.inputBuffer.getChannelData(0);
-        let pitch = detectPitch(input, audioContext.sampleRate);
-        if (pitch) {
-          let midiNote = freqToMidi(pitch);
-          noteEvents.push({ note: midiNote, time: audioContext.currentTime - startTime });
-          document.getElementById("notes").textContent += midiNote + " ";
-        }
+      mediaRecorder.ondataavailable = e => {
+        if (e.data.size > 0) audioChunks.push(e.data);
       };
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      isRecording = true;
-      document.getElementById("status").textContent = "録音中...";
+
+      mediaRecorder.start();
+      document.getElementById("status").textContent = "??録音中...";
     };
 
+    // 録音停止
     document.getElementById("stopBtn").onclick = () => {
-      if (!isRecording) return;
-      processor.disconnect();
-      micStream.getTracks().forEach(track => track.stop());
-      isRecording = false;
-      document.getElementById("status").textContent = "録音停止";
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+        document.getElementById("status").textContent = "??停止しました";
+      }
     };
 
+    // ダウンロード
     document.getElementById("downloadBtn").onclick = () => {
-      if (noteEvents.length === 0) {
-        alert("録音データがありません");
-        return;
-      }
+      // --- 本来は解析してMIDIを生成する処理が入る ---
+      // 今はダミーのMIDIバイナリを作成（C4音を1秒）
+      const midiData = new Uint8Array([
+        0x4D,0x54,0x68,0x64, // "MThd"
+        0x00,0x00,0x00,0x06, // header size
+        0x00,0x00, // format 0
+        0x00,0x01, // tracks
+        0x00,0x60, // division
 
-      let file = new Midi.File();
-      let track = new Midi.Track();
-      file.addTrack(track);
+        0x4D,0x54,0x72,0x6B, // "MTrk"
+        0x00,0x00,0x00,0x19, // length = 25
+        0x00,0x90,0x3C,0x64, // note on C4
+        0x81,0x40,0x80,0x3C,0x40, // after 192 ticks note off
+        0x00,0xFF,0x2F,0x00 // end of track
+      ]);
 
-      let lastTime = 0;
-      noteEvents.forEach(ev => {
-        let delta = Math.floor((ev.time - lastTime) * 128); // 簡易タイミング
-        track.addNoteOn(0, ev.note, delta);
-        track.addNoteOff(0, ev.note, delta + 64);
-        lastTime = ev.time;
-      });
+      const blob = new Blob([midiData], { type: "audio/midi" });
+      const url = URL.createObjectURL(blob);
 
-      let blob = new Blob([file.toBytes()], { type: "audio/midi" });
-      let url = URL.createObjectURL(blob);
-      let a = document.createElement("a");
+      const a = document.createElement("a");
       a.href = url;
-      a.download = "voice.mid";
+      a.download = "test.mid";
       a.click();
+      URL.revokeObjectURL(url);
+
+      document.getElementById("status").textContent = "?? test.mid を保存しました";
     };
   </script>
 </body>
