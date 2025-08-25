@@ -2,11 +2,10 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>クオンタイズ音階をMIDI保存（修正版）</title>
-  <script src="https://cdn.jsdelivr.net/npm/jsmidgen@1.1.1/build/midgen.min.js"></script>
+  <title>クオンタイズ録音 → MIDI保存</title>
 </head>
 <body>
-  <h2>クオンタイズ音階 → MIDIファイル保存（ログ付き）</h2>
+  <h2>クオンタイズ録音 → MIDI保存</h2>
   <label>BPM: <input id="bpmInput" type="number" value="120"></label>
   <button id="startBtn">録音開始</button>
   <button id="stopBtn">録音停止</button>
@@ -24,16 +23,20 @@
       const t = new Date().toLocaleTimeString();
       logArea.textContent += `[${t}] ${msg}\n`;
       logArea.scrollTop = logArea.scrollHeight;
+      console.log(msg);
     }
 
+    // 周波数→MIDI番号
     function freqToMidi(freq) {
       return Math.round(69 + 12 * Math.log2(freq / 440));
     }
+    // MIDI番号→ノート名
     function midiToNoteName(midi) {
       const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
       return names[midi % 12] + Math.floor(midi/12 - 1);
     }
 
+    // 簡易ピッチ検出（オートコリレーション法）
     function autoCorrelate(buf, sampleRate) {
       let SIZE = buf.length;
       let rms = 0;
@@ -55,6 +58,7 @@
       return sampleRate/bestOffset;
     }
 
+    // === 録音開始 ===
     async function startRecording() {
       if (recording) return;
       try {
@@ -81,7 +85,7 @@
             let midi = freqToMidi(pitch);
             let name = midiToNoteName(midi);
             let elapsed = audioCtx.currentTime - startTime;
-            let step = Math.round(elapsed / (beatLength/2));
+            let step = Math.round(elapsed / eighthLength);
             notes[step] = {midi, name};
             log(`音検出: ${name} (step=${step})`);
           }
@@ -95,6 +99,7 @@
       }
     }
 
+    // === 録音停止 ===
     function stopRecording() {
       if (!recording) {
         log("?? 録音は実行中ではありません");
@@ -107,42 +112,58 @@
       log("保存されたノート数: " + notes.filter(Boolean).length);
     }
 
+    // === MIDIファイル変換 ===
+    function convertToMidi(midiNotes) {
+      log("MIDIファイル変換開始");
+      const header = new Uint8Array([
+        0x4d,0x54,0x68,0x64, // "MThd"
+        0x00,0x00,0x00,0x06, // header size
+        0x00,0x00,           // format type
+        0x00,0x01,           // 1 track
+        0x00,0x60            // division (96 ticks)
+      ]);
+      const track = [
+        0x4d,0x54,0x72,0x6b, // "MTrk"
+        0x00,0x00,0x00,0x00  // size placeholder
+      ];
+      let trackData = [];
+      midiNotes.forEach(note => {
+        trackData.push(0x00,0x90,note,0x60); // Note ON
+        trackData.push(0x30,0x80,note,0x40); // Note OFF
+      });
+      trackData.push(0x00,0xff,0x2f,0x00);   // End of track
+      const trackSize = trackData.length;
+      track[4]=(trackSize>>24)&0xff;
+      track[5]=(trackSize>>16)&0xff;
+      track[6]=(trackSize>>8)&0xff;
+      track[7]=trackSize&0xff;
+      const midiFile = new Uint8Array([...header,...track,...trackData]);
+      log("MIDIファイル変換停止");
+      return new Blob([midiFile], { type: "audio/midi" });
+    }
+
+    // === ダウンロード ===
     function downloadMIDI() {
-      log("?? MIDI保存処理開始");
+      log("?? ダウンロード開始");
       if (!notes.length) {
         log("?? 保存できるノートがありません");
         return;
       }
-      try {
-        // ? 修正: JSMIDGEN 名前空間を使用
-        const file = new JSMIDGEN.File();
-        const track = new JSMIDGEN.Track();
-        file.addTrack(track);
-
-        const bpm = parseInt(document.getElementById("bpmInput").value, 10);
-        const eighthTicks = 128;
-        track.setTempo(bpm);
-
-        notes.forEach((n, i) => {
-          if (!n) return;
-          track.addNoteOn(0, n.midi, i * eighthTicks);
-          track.addNoteOff(0, n.midi, i * eighthTicks + eighthTicks);
-        });
-
-        const midiBlob = new Blob([file.toBytes()], { type: "audio/midi" });
-        const url = URL.createObjectURL(midiBlob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "quantized.mid";
-        a.click();
-        URL.revokeObjectURL(url);
-
-        log("? MIDIファイル保存成功 → quantized.mid");
-      } catch (err) {
-        log("? MIDI保存失敗: " + err);
-      }
+      // step順にMIDI番号を抽出
+      const midiNotes = notes.filter(Boolean).map(n=>n.midi);
+      const midiBlob = convertToMidi(midiNotes);
+      const url = URL.createObjectURL(midiBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "quantized.mid";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      log("? ダウンロード停止 → quantized.mid 保存完了");
     }
 
+    // === ボタンイベント ===
     document.getElementById("startBtn").onclick = startRecording;
     document.getElementById("stopBtn").onclick = stopRecording;
     document.getElementById("downloadBtn").onclick = downloadMIDI;
