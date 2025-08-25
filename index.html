@@ -1,62 +1,95 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>Voice to MIDI Demo (録音テスト)</title>
+  <meta charset="UTF-8">
+  <title>ピッチ検出テスト</title>
 </head>
 <body>
-  <h1>?? マイク録音テスト</h1>
+  <h2>マイク ピッチ検出デモ</h2>
   <button id="startBtn">録音開始</button>
-  <button id="stopBtn" disabled>録音停止</button>
-  <audio id="player" controls></audio>
+  <button id="stopBtn">停止</button>
+  <p>現在の周波数: <span id="freq">--</span> Hz</p>
+  <p>音階: <span id="note">--</span></p>
+
   <script>
-    let mediaRecorder;
-    let audioChunks = [];
+    let audioCtx, analyser, source, dataArray, rafId;
+
+    const freqSpan = document.getElementById("freq");
+    const noteSpan = document.getElementById("note");
 
     document.getElementById("startBtn").onclick = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      dataArray = new Float32Array(analyser.fftSize);
+      source.connect(analyser);
 
-        audioChunks = [];
-
-        mediaRecorder.ondataavailable = event => {
-          if (event.data.size > 0) {
-            audioChunks.push(event.data);
-          }
-        };
-
-        mediaRecorder.onstop = () => {
-          const blob = new Blob(audioChunks, { type: "audio/webm" });
-          const url = URL.createObjectURL(blob);
-          document.getElementById("player").src = url;
-
-          // ダウンロードリンク作成
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = "recorded.webm";
-          a.textContent = "録音ファイルをダウンロード";
-          document.body.appendChild(a);
-        };
-
-        mediaRecorder.start();
-        document.getElementById("startBtn").disabled = true;
-        document.getElementById("stopBtn").disabled = false;
-
-        console.log("録音開始");
-      } catch (err) {
-        console.error("マイク取得失敗:", err);
-      }
+      updatePitch();
     };
 
     document.getElementById("stopBtn").onclick = () => {
-      if (mediaRecorder && mediaRecorder.state === "recording") {
-        mediaRecorder.stop();
-        console.log("録音停止");
-        document.getElementById("startBtn").disabled = false;
-        document.getElementById("stopBtn").disabled = true;
-      }
+      cancelAnimationFrame(rafId);
+      if (audioCtx) audioCtx.close();
     };
+
+    function autoCorrelate(buf, sampleRate) {
+      let SIZE = buf.length;
+      let rms = 0;
+
+      for (let i = 0; i < SIZE; i++) {
+        let val = buf[i];
+        rms += val * val;
+      }
+      rms = Math.sqrt(rms / SIZE);
+      if (rms < 0.01) return -1;
+
+      let r1 = 0, r2 = SIZE - 1, thres = 0.2;
+      for (let i = 0; i < SIZE / 2; i++) {
+        if (Math.abs(buf[i]) < thres) { r1 = i; break; }
+      }
+      for (let i = 1; i < SIZE / 2; i++) {
+        if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+      }
+
+      buf = buf.slice(r1, r2);
+      SIZE = buf.length;
+
+      let c = new Array(SIZE).fill(0);
+      for (let i = 0; i < SIZE; i++)
+        for (let j = 0; j < SIZE - i; j++)
+          c[i] = c[i] + buf[j] * buf[j + i];
+
+      let d = 0; while (c[d] > c[d + 1]) d++;
+      let maxval = -1, maxpos = -1;
+      for (let i = d; i < SIZE; i++) {
+        if (c[i] > maxval) { maxval = c[i]; maxpos = i; }
+      }
+      let T0 = maxpos;
+      return sampleRate / T0;
+    }
+
+    function freqToNote(freq) {
+      if (freq <= 0) return "--";
+      let noteNum = 12 * (Math.log(freq / 440) / Math.log(2));
+      let noteIndex = Math.round(noteNum) + 69;
+      const notes = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+      return notes[noteIndex % 12] + Math.floor(noteIndex / 12 - 1);
+    }
+
+    function updatePitch() {
+      analyser.getFloatTimeDomainData(dataArray);
+      let pitch = autoCorrelate(dataArray, audioCtx.sampleRate);
+      if (pitch !== -1) {
+        freqSpan.textContent = pitch.toFixed(2);
+        noteSpan.textContent = freqToNote(pitch);
+      } else {
+        freqSpan.textContent = "--";
+        noteSpan.textContent = "--";
+      }
+      rafId = requestAnimationFrame(updatePitch);
+    }
   </script>
 </body>
 </html>
