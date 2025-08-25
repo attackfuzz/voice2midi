@@ -2,89 +2,110 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>録音テスト with ログ</title>
+  <title>MIDI風録音・保存テスト</title>
 </head>
 <body>
-  <h2>録音テスト（ログ付き）</h2>
+  <h2>MIDI風録音テスト</h2>
   <button id="startBtn">録音開始</button>
-  <button id="stopBtn" disabled>録音停止</button>
-  <button id="downloadBtn" disabled>ダウンロード</button>
-  <audio id="audioPlayback" controls></audio>
-
-  <pre id="logArea" style="background:#eee; padding:10px; height:200px; overflow:auto;"></pre>
+  <button id="stopBtn">録音停止</button>
+  <button id="downloadBtn">ダウンロード</button>
 
   <script>
     let mediaRecorder;
     let audioChunks = [];
-    let audioBlob;
+    let isRecording = false;
 
-    const startBtn = document.getElementById("startBtn");
-    const stopBtn = document.getElementById("stopBtn");
-    const downloadBtn = document.getElementById("downloadBtn");
-    const audioPlayback = document.getElementById("audioPlayback");
-    const logArea = document.getElementById("logArea");
+    // ?? MIDI風データ格納用
+    let midiNotes = [];
 
-    function log(message) {
-      const time = new Date().toLocaleTimeString();
-      logArea.textContent += `[${time}] ${message}\n`;
-      logArea.scrollTop = logArea.scrollHeight;
+    // ==== ログ関数 ====
+    function log(msg) {
+      console.log(`[LOG] ${msg}`);
     }
 
-    startBtn.addEventListener("click", async () => {
+    // ==== 録音開始 ====
+    document.getElementById("startBtn").addEventListener("click", async () => {
+      if (isRecording) return;
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mediaRecorder = new MediaRecorder(stream);
 
-        mediaRecorder.onstart = () => {
-          log("?? 録音開始");
-          audioChunks = [];
-          startBtn.disabled = true;
-          stopBtn.disabled = false;
-          downloadBtn.disabled = true;
-        };
+        audioChunks = [];
+        midiNotes = []; // 新規録音ごとにリセット
 
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            audioChunks.push(event.data);
-          }
-        };
-
-        mediaRecorder.onstop = () => {
-          log("?? 録音停止");
-          audioBlob = new Blob(audioChunks, { type: "audio/webm" });
-          audioPlayback.src = URL.createObjectURL(audioBlob);
-          stopBtn.disabled = true;
-          startBtn.disabled = false;
-          downloadBtn.disabled = false;
+        mediaRecorder.ondataavailable = e => {
+          audioChunks.push(e.data);
         };
 
         mediaRecorder.start();
+        isRecording = true;
+        log("録音開始");
       } catch (err) {
-        log("?? マイクの利用が許可されませんでした: " + err);
+        console.error("マイク取得エラー:", err);
       }
     });
 
-    stopBtn.addEventListener("click", () => {
-      if (mediaRecorder && mediaRecorder.state === "recording") {
-        mediaRecorder.stop();
-      }
+    // ==== 録音停止 ====
+    document.getElementById("stopBtn").addEventListener("click", () => {
+      if (!isRecording) return;
+      mediaRecorder.stop();
+      isRecording = false;
+      log("録音停止");
     });
 
-    downloadBtn.addEventListener("click", () => {
-      if (audioBlob) {
-        log("?? ダウンロード開始");
-        const url = URL.createObjectURL(audioBlob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "recorded_audio.webm";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        log("? ダウンロード完了");
-      } else {
-        log("?? ダウンロードできるデータがありません");
-      }
+    // ==== MIDI解析（擬似処理） ====
+    function startMidiAnalysis() {
+      log("MIDI解析開始");
+      // ここで録音データを解析して擬似的にノート番号を作る
+      midiNotes = [60, 62, 64, 65, 67]; // C D E F G
+      log("MIDI解析停止");
+    }
+
+    // ==== MIDIファイル変換 ====
+    function convertToMidi() {
+      log("MIDIファイル変換開始");
+      // 簡易的にSMFフォーマットのバイナリを生成（ダミー）
+      const header = new Uint8Array([
+        0x4d, 0x54, 0x68, 0x64, // "MThd"
+        0x00, 0x00, 0x00, 0x06, // header size
+        0x00, 0x00,             // format type
+        0x00, 0x01,             // 1 track
+        0x00, 0x60              // division (96 ticks)
+      ]);
+      const track = [
+        0x4d, 0x54, 0x72, 0x6b, // "MTrk"
+        0x00, 0x00, 0x00, 0x00  // size placeholder
+      ];
+      let trackData = [];
+      midiNotes.forEach(note => {
+        trackData.push(0x00, 0x90, note, 0x60); // Note ON
+        trackData.push(0x30, 0x80, note, 0x40); // Note OFF
+      });
+      trackData.push(0x00, 0xff, 0x2f, 0x00); // End of Track
+      const trackSize = trackData.length;
+      track[4] = (trackSize >> 24) & 0xff;
+      track[5] = (trackSize >> 16) & 0xff;
+      track[6] = (trackSize >> 8) & 0xff;
+      track[7] = trackSize & 0xff;
+      const midiFile = new Uint8Array([...header, ...track, ...trackData]);
+      log("MIDIファイル変換停止");
+      return new Blob([midiFile], { type: "audio/midi" });
+    }
+
+    // ==== ダウンロード ====
+    document.getElementById("downloadBtn").addEventListener("click", () => {
+      log("ダウンロード開始");
+      startMidiAnalysis();
+      const midiBlob = convertToMidi();
+      const url = URL.createObjectURL(midiBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "recorded.mid";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      log("ダウンロード停止");
     });
   </script>
 </body>
