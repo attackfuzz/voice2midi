@@ -1,58 +1,91 @@
-<script src="https://cdn.jsdelivr.net/npm/jsmidgen@0.2.6/build/jsmidgen.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pitchy/dist/pitchy.min.js"></script>
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>録音テスト with ログ</title>
+</head>
+<body>
+  <h2>録音テスト（ログ付き）</h2>
+  <button id="startBtn">録音開始</button>
+  <button id="stopBtn" disabled>録音停止</button>
+  <button id="downloadBtn" disabled>ダウンロード</button>
+  <audio id="audioPlayback" controls></audio>
 
-<button id="start">録音開始</button>
-<button id="stop">録音停止</button>
-<button id="saveMIDI">MIDI保存</button>
+  <pre id="logArea" style="background:#eee; padding:10px; height:200px; overflow:auto;"></pre>
 
-<script>
-let audioCtx, mic, analyser, dataArray, recording = false, midiEvents = [];
+  <script>
+    let mediaRecorder;
+    let audioChunks = [];
+    let audioBlob;
 
-document.getElementById("start").onclick = async () => {
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  mic = audioCtx.createMediaStreamSource(stream);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 2048;
-  mic.connect(analyser);
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
+    const audioPlayback = document.getElementById("audioPlayback");
+    const logArea = document.getElementById("logArea");
 
-  dataArray = new Float32Array(analyser.fftSize);
-  recording = true;
-  midiEvents = [];
-  detectPitch();
-};
+    function log(message) {
+      const time = new Date().toLocaleTimeString();
+      logArea.textContent += `[${time}] ${message}\n`;
+      logArea.scrollTop = logArea.scrollHeight;
+    }
 
-document.getElementById("stop").onclick = () => {
-  recording = false;
-};
+    startBtn.addEventListener("click", async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
 
-function detectPitch() {
-  if (!recording) return;
-  analyser.getFloatTimeDomainData(dataArray);
-  const [pitch, clarity] = Pitchy.findPitch(dataArray, audioCtx.sampleRate);
+        mediaRecorder.onstart = () => {
+          log("?? 録音開始");
+          audioChunks = [];
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          downloadBtn.disabled = true;
+        };
 
-  if (clarity > 0.8) { // 信頼度が高ければ
-    const midiNote = Math.round(69 + 12 * Math.log2(pitch / 440));
-    midiEvents.push({ time: audioCtx.currentTime, note: midiNote });
-    console.log("Detected note:", midiNote);
-  }
-  requestAnimationFrame(detectPitch);
-}
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunks.push(event.data);
+          }
+        };
 
-document.getElementById("saveMIDI").onclick = () => {
-  const file = new JSMidi.File();
-  const track = new JSMidi.Track();
-  file.addTrack(track);
+        mediaRecorder.onstop = () => {
+          log("?? 録音停止");
+          audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+          audioPlayback.src = URL.createObjectURL(audioBlob);
+          stopBtn.disabled = true;
+          startBtn.disabled = false;
+          downloadBtn.disabled = false;
+        };
 
-  midiEvents.forEach((e, i) => {
-    track.addNoteOn(0, e.note, i * 128);  // 簡易的に配置
-    track.addNoteOff(0, e.note, i * 128 + 64);
-  });
+        mediaRecorder.start();
+      } catch (err) {
+        log("?? マイクの利用が許可されませんでした: " + err);
+      }
+    });
 
-  const blob = new Blob([file.toBytes()], { type: "audio/midi" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "recorded.mid";
-  a.click();
-};
-</script>
+    stopBtn.addEventListener("click", () => {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+      }
+    });
+
+    downloadBtn.addEventListener("click", () => {
+      if (audioBlob) {
+        log("?? ダウンロード開始");
+        const url = URL.createObjectURL(audioBlob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "recorded_audio.webm";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        log("? ダウンロード完了");
+      } else {
+        log("?? ダウンロードできるデータがありません");
+      }
+    });
+  </script>
+</body>
+</html>
