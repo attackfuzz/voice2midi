@@ -1,118 +1,58 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <title>MIDI風録音テスト</title>
-</head>
-<body>
-  <h2>録音 → 音階 → MIDI風データ保存</h2>
-  <button id="startBtn">?? 録音開始</button>
-  <button id="stopBtn">? 停止</button>
-  <button id="downloadBtn">?? MIDI風データ保存</button>
-  <div id="output"></div>
+<script src="https://cdn.jsdelivr.net/npm/jsmidgen@0.2.6/build/jsmidgen.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pitchy/dist/pitchy.min.js"></script>
 
-  <script>
-    let audioContext, analyser, source, mediaStream;
-    let isRecording = false;
-    let recordedNotes = [];
+<button id="start">録音開始</button>
+<button id="stop">録音停止</button>
+<button id="saveMIDI">MIDI保存</button>
 
-    // 周波数 → 音階名とMIDIノート変換
-    function freqToNote(freq) {
-      if (!freq) return null;
-      const A4 = 440;
-      const noteNum = 12 * (Math.log(freq / A4) / Math.log(2)) + 69;
-      const midi = Math.round(noteNum);
+<script>
+let audioCtx, mic, analyser, dataArray, recording = false, midiEvents = [];
 
-      const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-      const name = noteNames[midi % 12] + Math.floor(midi / 12 - 1);
-      return {midi, name};
-    }
+document.getElementById("start").onclick = async () => {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mic = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  mic.connect(analyser);
 
-    // ピッチ検出（簡易）
-    function autoCorrelate(buf, sampleRate) {
-      let SIZE = buf.length;
-      let rms = 0;
-      for (let i = 0; i < SIZE; i++) {
-        let val = buf[i];
-        rms += val * val;
-      }
-      rms = Math.sqrt(rms / SIZE);
-      if (rms < 0.01) return null;
+  dataArray = new Float32Array(analyser.fftSize);
+  recording = true;
+  midiEvents = [];
+  detectPitch();
+};
 
-      let r1 = 0, r2 = SIZE - 1, thres = 0.2;
-      for (let i = 0; i < SIZE / 2; i++) {
-        if (Math.abs(buf[i]) < thres) { r1 = i; break; }
-      }
-      for (let i = 1; i < SIZE / 2; i++) {
-        if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
-      }
+document.getElementById("stop").onclick = () => {
+  recording = false;
+};
 
-      buf = buf.slice(r1, r2);
-      SIZE = buf.length;
+function detectPitch() {
+  if (!recording) return;
+  analyser.getFloatTimeDomainData(dataArray);
+  const [pitch, clarity] = Pitchy.findPitch(dataArray, audioCtx.sampleRate);
 
-      let c = new Array(SIZE).fill(0);
-      for (let i = 0; i < SIZE; i++) {
-        for (let j = 0; j < SIZE - i; j++) {
-          c[i] = c[i] + buf[j] * buf[j + i];
-        }
-      }
-      let d = 0; while (c[d] > c[d+1]) d++;
-      let maxval = -1, maxpos = -1;
-      for (let i = d; i < SIZE; i++) {
-        if (c[i] > maxval) {
-          maxval = c[i]; maxpos = i;
-        }
-      }
-      let T0 = maxpos;
-      return sampleRate / T0;
-    }
+  if (clarity > 0.8) { // 信頼度が高ければ
+    const midiNote = Math.round(69 + 12 * Math.log2(pitch / 440));
+    midiEvents.push({ time: audioCtx.currentTime, note: midiNote });
+    console.log("Detected note:", midiNote);
+  }
+  requestAnimationFrame(detectPitch);
+}
 
-    async function startRecording() {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      source = audioContext.createMediaStreamSource(mediaStream);
+document.getElementById("saveMIDI").onclick = () => {
+  const file = new JSMidi.File();
+  const track = new JSMidi.Track();
+  file.addTrack(track);
 
-      analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
-      source.connect(analyser);
+  midiEvents.forEach((e, i) => {
+    track.addNoteOn(0, e.note, i * 128);  // 簡易的に配置
+    track.addNoteOff(0, e.note, i * 128 + 64);
+  });
 
-      let buffer = new Float32Array(analyser.fftSize);
-      isRecording = true;
-      recordedNotes = [];
-
-      function updatePitch() {
-        if (!isRecording) return;
-        analyser.getFloatTimeDomainData(buffer);
-        let freq = autoCorrelate(buffer, audioContext.sampleRate);
-        let note = freqToNote(freq);
-        if (note) {
-          document.getElementById("output").innerText =
-            `?? ${note.name} (MIDI:${note.midi})`;
-          recordedNotes.push({time: audioContext.currentTime, ...note});
-        }
-        requestAnimationFrame(updatePitch);
-      }
-      updatePitch();
-    }
-
-    function stopRecording() {
-      isRecording = false;
-      mediaStream.getTracks().forEach(track => track.stop());
-      document.getElementById("output").innerText = "? 停止しました";
-    }
-
-    function downloadMIDIJson() {
-      const blob = new Blob([JSON.stringify(recordedNotes, null, 2)], {type:"application/json"});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "midi風データ.json";
-      a.click();
-    }
-
-    document.getElementById("startBtn").onclick = startRecording;
-    document.getElementById("stopBtn").onclick = stopRecording;
-    document.getElementById("downloadBtn").onclick = downloadMIDIJson;
-  </script>
-</body>
-</html>
+  const blob = new Blob([file.toBytes()], { type: "audio/midi" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "recorded.mid";
+  a.click();
+};
+</script>
