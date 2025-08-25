@@ -6,7 +6,7 @@
   <script src="https://cdn.jsdelivr.net/npm/jsmidgen@1.1.1/build/midgen.min.js"></script>
 </head>
 <body>
-  <h2>クオンタイズ音階 → MIDIファイル保存（ログ付き）2</h2>
+  <h2>クオンタイズ音階 → MIDIファイル保存（ログ付き）</h2>
   <label>BPM: <input id="bpmInput" type="number" value="120"></label>
   <button id="startBtn">録音開始</button>
   <button id="stopBtn">録音停止</button>
@@ -81,7 +81,7 @@
             let midi = freqToMidi(pitch);
             let name = midiToNoteName(midi);
             let elapsed = audioCtx.currentTime - startTime;
-            let step = Math.round(elapsed / eighthLength);
+            let step = Math.round(elapsed / (beatLength/2));
             notes[step] = {midi, name};
             log(`音検出: ${name} (step=${step})`);
           }
@@ -114,8 +114,9 @@
         return;
       }
       try {
-        const file = new MIDI.File();   // ← 修正ポイント
-        const track = new MIDI.Track();
+        // ? 修正: JSMIDGEN 名前空間を使用
+        const file = new JSMIDGEN.File();
+        const track = new JSMIDGEN.Track();
         file.addTrack(track);
 
         const bpm = parseInt(document.getElementById("bpmInput").value, 10);
