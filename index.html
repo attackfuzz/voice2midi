@@ -2,70 +2,117 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>MIDIダウンロードテスト</title>
+  <title>MIDI風録音テスト</title>
 </head>
 <body>
-  <h1>マイク録音 → MIDI保存（テスト版）</h1>
-  <button id="startBtn">録音開始</button>
-  <button id="stopBtn">録音停止</button>
-  <button id="downloadBtn">MIDIダウンロード</button>
-  <p id="status"></p>
+  <h2>録音 → 音階 → MIDI風データ保存</h2>
+  <button id="startBtn">?? 録音開始</button>
+  <button id="stopBtn">? 停止</button>
+  <button id="downloadBtn">?? MIDI風データ保存</button>
+  <div id="output"></div>
 
   <script>
-    let mediaRecorder;
-    let audioChunks = [];
+    let audioContext, analyser, source, mediaStream;
+    let isRecording = false;
+    let recordedNotes = [];
 
-    // 録音開始
-    document.getElementById("startBtn").onclick = async () => {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder = new MediaRecorder(stream);
-      audioChunks = [];
+    // 周波数 → 音階名とMIDIノート変換
+    function freqToNote(freq) {
+      if (!freq) return null;
+      const A4 = 440;
+      const noteNum = 12 * (Math.log(freq / A4) / Math.log(2)) + 69;
+      const midi = Math.round(noteNum);
 
-      mediaRecorder.ondataavailable = e => {
-        if (e.data.size > 0) audioChunks.push(e.data);
-      };
+      const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+      const name = noteNames[midi % 12] + Math.floor(midi / 12 - 1);
+      return {midi, name};
+    }
 
-      mediaRecorder.start();
-      document.getElementById("status").textContent = "??録音中...";
-    };
-
-    // 録音停止
-    document.getElementById("stopBtn").onclick = () => {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-        document.getElementById("status").textContent = "??停止しました";
+    // ピッチ検出（簡易）
+    function autoCorrelate(buf, sampleRate) {
+      let SIZE = buf.length;
+      let rms = 0;
+      for (let i = 0; i < SIZE; i++) {
+        let val = buf[i];
+        rms += val * val;
       }
-    };
+      rms = Math.sqrt(rms / SIZE);
+      if (rms < 0.01) return null;
 
-    // ダウンロード
-    document.getElementById("downloadBtn").onclick = () => {
-      // --- 本来は解析してMIDIを生成する処理が入る ---
-      // 今はダミーのMIDIバイナリを作成（C4音を1秒）
-      const midiData = new Uint8Array([
-        0x4D,0x54,0x68,0x64, // "MThd"
-        0x00,0x00,0x00,0x06, // header size
-        0x00,0x00, // format 0
-        0x00,0x01, // tracks
-        0x00,0x60, // division
+      let r1 = 0, r2 = SIZE - 1, thres = 0.2;
+      for (let i = 0; i < SIZE / 2; i++) {
+        if (Math.abs(buf[i]) < thres) { r1 = i; break; }
+      }
+      for (let i = 1; i < SIZE / 2; i++) {
+        if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+      }
 
-        0x4D,0x54,0x72,0x6B, // "MTrk"
-        0x00,0x00,0x00,0x19, // length = 25
-        0x00,0x90,0x3C,0x64, // note on C4
-        0x81,0x40,0x80,0x3C,0x40, // after 192 ticks note off
-        0x00,0xFF,0x2F,0x00 // end of track
-      ]);
+      buf = buf.slice(r1, r2);
+      SIZE = buf.length;
 
-      const blob = new Blob([midiData], { type: "audio/midi" });
+      let c = new Array(SIZE).fill(0);
+      for (let i = 0; i < SIZE; i++) {
+        for (let j = 0; j < SIZE - i; j++) {
+          c[i] = c[i] + buf[j] * buf[j + i];
+        }
+      }
+      let d = 0; while (c[d] > c[d+1]) d++;
+      let maxval = -1, maxpos = -1;
+      for (let i = d; i < SIZE; i++) {
+        if (c[i] > maxval) {
+          maxval = c[i]; maxpos = i;
+        }
+      }
+      let T0 = maxpos;
+      return sampleRate / T0;
+    }
+
+    async function startRecording() {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      source = audioContext.createMediaStreamSource(mediaStream);
+
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+
+      let buffer = new Float32Array(analyser.fftSize);
+      isRecording = true;
+      recordedNotes = [];
+
+      function updatePitch() {
+        if (!isRecording) return;
+        analyser.getFloatTimeDomainData(buffer);
+        let freq = autoCorrelate(buffer, audioContext.sampleRate);
+        let note = freqToNote(freq);
+        if (note) {
+          document.getElementById("output").innerText =
+            `?? ${note.name} (MIDI:${note.midi})`;
+          recordedNotes.push({time: audioContext.currentTime, ...note});
+        }
+        requestAnimationFrame(updatePitch);
+      }
+      updatePitch();
+    }
+
+    function stopRecording() {
+      isRecording = false;
+      mediaStream.getTracks().forEach(track => track.stop());
+      document.getElementById("output").innerText = "? 停止しました";
+    }
+
+    function downloadMIDIJson() {
+      const blob = new Blob([JSON.stringify(recordedNotes, null, 2)], {type:"application/json"});
       const url = URL.createObjectURL(blob);
-
       const a = document.createElement("a");
       a.href = url;
-      a.download = "test.mid";
+      a.download = "midi風データ.json";
       a.click();
-      URL.revokeObjectURL(url);
+    }
 
-      document.getElementById("status").textContent = "?? test.mid を保存しました";
-    };
+    document.getElementById("startBtn").onclick = startRecording;
+    document.getElementById("stopBtn").onclick = stopRecording;
+    document.getElementById("downloadBtn").onclick = downloadMIDIJson;
   </script>
 </body>
 </html>
